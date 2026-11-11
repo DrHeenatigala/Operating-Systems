@@ -12,6 +12,7 @@
 #define MAX_CHILDREN 100
 pid_t children_pids[MAX_CHILDREN];
 int children_count = 0;
+int next_children = 0;
 
 typedef enum {
     CMD_UNKNOWN = -1,
@@ -47,20 +48,13 @@ TipoComando ottieni_codice_comando(const char *str) {
 }
 
 void handle_signal(int sig) {
-    for (int i = 0; i < children_count; i++) {
-        if (children_pids[i] > 0) {
-            kill(children_pids[i], SIGTERM);
+    if(sig == SIGINT || sig == SIGTERM) {
+        for (int i = 0; i < children_count; i++) {
+            if (children_pids[i] > 0) {
+                kill(children_pids[i], SIGTERM);
+            }
         }
     }
-    if (sig == SIGINT) {
-        printf("\nRicevuto segnale SIGINT. Uscita dal controller.\n");
-        exit(EXIT_SUCCESS);
-    }
-    if (sig == SIGTERM) {
-        printf("\nRicevuto segnale SIGTERM. Uscita dal controller.\n");
-        exit(EXIT_SUCCESS);
-    }
-    _exit(0);
 }
 
 int list_command(const char *arg) {
@@ -81,16 +75,20 @@ int add_command(const char *device, const char *argchk) {
         fprintf(stderr, "Errore: comando 'add' accetta solo un sottocomando (bulb, window, fridge, hub, timer)\n");
         return INVALID_COMMAND;
     }
+    if(next_children >= MAX_CHILDREN) {
+        fprintf(stderr, "Errore: limite massimo di dispositivi raggiunto\n");
+        return INVALID_COMMAND;
+    }
     pid_t new_device_pid;
     TipoComando device_cmd = ottieni_codice_comando(device);
     switch(device_cmd) {
         case CMD_ADD_BULB:
             printf("comando add bulb eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo bulb
             fflush(stdout);
+            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo timer
             new_device_pid = fork();
             if(new_device_pid == 0) {
-                // Child process
-                execv("./bulb", NULL); //TODO: passare gli argomenti necessari al processo bulb
+                execv("./bulb", (char *[]){"code/bulb", tostring(next_children), NULL}); //TODO: passare gli argomenti necessari al processo bulb
                 perror("execv failed");
                 exit(EXIT_FAILURE);
             } else if(new_device_pid < 0) {
@@ -102,10 +100,11 @@ int add_command(const char *device, const char *argchk) {
         case CMD_ADD_WINDOW:
             printf("comando add window eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo window
             fflush(stdout);
+            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo timer
             new_device_pid = fork();
             if(new_device_pid == 0) {
-                // Child process
-                execv("./window", NULL); //TODO: passare gli argomenti necessari al processo window
+                children_pids[children_count++] = getpid();
+                execv("./window", (char *[]){"code/window", tostring(next_children), NULL}); //TODO: passare gli argomenti necessari al processo window
                 perror("execv failed");
                 exit(EXIT_FAILURE);
             } else if(new_device_pid < 0) {
@@ -117,10 +116,11 @@ int add_command(const char *device, const char *argchk) {
         case CMD_ADD_FRIDGE:
             printf("comando add fridge eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo fridge
             fflush(stdout);
+            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo timer
             new_device_pid = fork();
             if(new_device_pid == 0) {
-                // Child process
-                execv("./fridge", NULL); //TODO: passare gli argomenti necessari al processo fridge
+                children_pids[children_count++] = getpid();
+                execv("./fridge", (char *[]){"code/fridge", tostring(next_children), NULL}); //TODO: passare gli argomenti necessari al processo fridge
                 perror("execv failed");
                 exit(EXIT_FAILURE);
             } else if(new_device_pid < 0) {
@@ -130,12 +130,12 @@ int add_command(const char *device, const char *argchk) {
             children_pids[children_count++] = new_device_pid;
             return ERR_OK;
         case CMD_ADD_HUB:
-            printf("comando add hub eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo hub
+            printf("comando add hub eseguito\n");
             fflush(stdout);
+            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo hub
             new_device_pid = fork();
             if(new_device_pid == 0) {
-                // Child process
-                execv("./hub", NULL); //TODO: passare gli argomenti necessari al processo hub
+                execv("./hub", (char *[]){"code/hub", tostring(next_children), NULL}); //TODO: creare l'hub
                 perror("execv failed");
                 exit(EXIT_FAILURE);
             } else if(new_device_pid < 0) {
@@ -147,10 +147,11 @@ int add_command(const char *device, const char *argchk) {
         case CMD_ADD_TIMER:
             printf("comando add timer eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo timer
             fflush(stdout);
+            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo timer
             new_device_pid = fork();
             if(new_device_pid == 0) {
                 // Child process
-                execv("./timer", NULL); //TODO: passare gli argomenti necessari al processo timer
+                execv("./timer", (char *[]){"code/timer", tostring(next_children), NULL}); //TODO: passare gli argomenti necessari al processo timer
                 perror("execv failed");
                 exit(EXIT_FAILURE);
             } else if(new_device_pid < 0) {
@@ -223,7 +224,7 @@ int cmd_switch(const char *id, const char *label, const char *pos) {
     }
     printf("comando switch eseguito con argomenti: %s %s %s\n", id, label, pos); //TODO: implementare la logica di cambio stato del dispositivo con l'id specificato, per l'etichetta e la posizione specificate
     return ERR_OK;
-    // ok, qua è un casino
+    // ok, qua è un casino, dobbiamo prima implementare la comunicazione inter process (in poche parole una tumorata)
     // cose che deve fare il comando switch:
     // 1. controllare che l'id sia valido (cioè che esista un dispositivo con quell'id)
     // 2. controllare la tipologia del dispositivo con quell'id (cioè se è un bulb, una finestra, un frigorifero, un hub o un timer)
