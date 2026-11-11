@@ -2,11 +2,16 @@
 
 #include <stdio.h>
 #include <string.h>
-//#include <strings.h> da usare su linux per usare strcasecmp, su windows non è presente quindi si usa string.h
+#include <strings.h> 
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include "errors.h"
+#include <signal.h>
+#include "../include/errors.h"
+
+#define MAX_CHILDREN 100
+pid_t children_pids[MAX_CHILDREN];
+int children_count = 0;
 
 typedef enum {
     CMD_UNKNOWN = -1,
@@ -40,6 +45,24 @@ TipoComando ottieni_codice_comando(const char *str) {
     if (strcmp(str, "timer") == 0)  return CMD_ADD_TIMER; // comando speciale per testare il timer
     return CMD_UNKNOWN;
 }
+
+void handle_signal(int sig) {
+    for (int i = 0; i < children_count; i++) {
+        if (children_pids[i] > 0) {
+            kill(children_pids[i], SIGTERM);
+        }
+    }
+    if (sig == SIGINT) {
+        printf("\nRicevuto segnale SIGINT. Uscita dal controller.\n");
+        exit(EXIT_SUCCESS);
+    }
+    if (sig == SIGTERM) {
+        printf("\nRicevuto segnale SIGTERM. Uscita dal controller.\n");
+        exit(EXIT_SUCCESS);
+    }
+    _exit(0);
+}
+
 int list_command(const char *arg) {
     if(arg != NULL) {
         fprintf(stderr, "Errore: comando 'list' non accetta argomenti\n");
@@ -74,6 +97,7 @@ int add_command(const char *device, const char *argchk) {
                 perror("fork failed");
                 return LINK_FAILED;
             }
+            children_pids[children_count++] = new_device_pid;
             return ERR_OK;
         case CMD_ADD_WINDOW:
             printf("comando add window eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo window
@@ -88,6 +112,7 @@ int add_command(const char *device, const char *argchk) {
                 perror("fork failed");
                 return LINK_FAILED;
             }
+            children_pids[children_count++] = new_device_pid;
             return ERR_OK;
         case CMD_ADD_FRIDGE:
             printf("comando add fridge eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo fridge
@@ -102,6 +127,7 @@ int add_command(const char *device, const char *argchk) {
                 perror("fork failed");
                 return LINK_FAILED;
             }
+            children_pids[children_count++] = new_device_pid;
             return ERR_OK;
         case CMD_ADD_HUB:
             printf("comando add hub eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo hub
@@ -116,6 +142,7 @@ int add_command(const char *device, const char *argchk) {
                 perror("fork failed");
                 return LINK_FAILED;
             }
+            children_pids[children_count++] = new_device_pid;
             return ERR_OK;
         case CMD_ADD_TIMER:
             printf("comando add timer eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo timer
@@ -130,6 +157,7 @@ int add_command(const char *device, const char *argchk) {
                 perror("fork failed");
                 return LINK_FAILED;
             }
+            children_pids[children_count++] = new_device_pid;
             return ERR_OK;
         default:
             fprintf(stderr, "sottocomando sconosciuto per 'add': %s\n", device);
@@ -228,6 +256,13 @@ int main(void){
     // il Controller apre una piccola shell con sei comandi: list, add, del, link, switch, info
     char input[128];
     int error_code = ERR_OK;
+    struct sigaction sa;
+    sa.sa_handler = handle_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     printf("Controller avviato. Inserisci un comando (list, add, del, link, switch, info, esci): \n");
     while(1){
@@ -271,6 +306,11 @@ int main(void){
                 break;
             case CMD_ESCI:
                 printf("Uscita dal controller.\n");
+                for (int i = 0; i < children_count; i++) {
+                    if (children_pids[i] > 0) {
+                        kill(children_pids[i], SIGTERM);
+                    }
+                }
                 return EXIT_SUCCESS;
             default:
                 fprintf(stderr, "comando sconosciuto: %s\n", keyword);
