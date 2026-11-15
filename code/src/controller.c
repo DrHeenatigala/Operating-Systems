@@ -10,9 +10,6 @@
 #include "../include/errors.h"
 
 #define MAX_CHILDREN 100
-pid_t children_pids[MAX_CHILDREN];
-int children_count = 0;
-int next_children = 0;
 
 typedef enum {
     CMD_UNKNOWN = -1,
@@ -29,6 +26,16 @@ typedef enum {
     CMD_ADD_HUB,
     CMD_ADD_TIMER
 } TipoComando;
+
+typedef struct {
+    pid_t pid;
+    char *fifo_path;
+} Dispositivo;
+
+//variabili globali per tener traccia dei processi figli e dei loro fifo
+Dispositivo children[MAX_CHILDREN];
+int children_count = 0;
+int next_children = 0;
 
 // Funzione che converte la stringa nel rispettivo enum
 TipoComando ottieni_codice_comando(const char *str) {
@@ -50,8 +57,8 @@ TipoComando ottieni_codice_comando(const char *str) {
 void handle_signal(int sig) {
     if(sig == SIGINT || sig == SIGTERM) {
         for (int i = 0; i < children_count; i++) {
-            if (children_pids[i] > 0) {
-                kill(children_pids[i], SIGTERM);
+            if (children[i].pid > 0) {
+                kill(children[i].pid, SIGTERM);
             }
         }
     }
@@ -65,7 +72,32 @@ int list_command(const char *arg) {
     printf("comando list eseguito\n"); //TODO: implementare la logica di visualizzazione della lista dei dispositivi
     return ERR_OK;
 }
+int add_routine(char *device) {
+    char testo[64];
+    char path[64];
+    pid_t new_device_pid;
+    printf("comando add %s eseguito\n", device);
+    fflush(stdout);
+    snprintf(path, sizeof(path), "./%s", device);
+    new_device_pid = fork();
+    
+    if(new_device_pid == 0) {
+        snprintf(testo, sizeof(testo), "%d", next_children + 1);
+        execv(path, (char *[]){device, testo, NULL});
+        perror("execv failed");
+        exit(EXIT_FAILURE);
+    } else if(new_device_pid < 0) {
+        perror("fork failed");
+        return LINK_FAILED;
+    }
 
+    next_children++;
+    snprintf(testo, sizeof(testo), "/tmp/domotics_%d.fifo", next_children);
+    children[next_children - 1].fifo_path = strdup(testo);
+    children[next_children - 1].pid = new_device_pid;
+    children_count++;
+    return ERR_OK;
+}
 int add_command(const char *device, const char *argchk) {
     if(device == NULL) {
         fprintf(stderr, "Errore: comando 'add' richiede un sottocomando (bulb, window, fridge, hub, timer)\n");
@@ -75,7 +107,7 @@ int add_command(const char *device, const char *argchk) {
         fprintf(stderr, "Errore: comando 'add' accetta solo un sottocomando (bulb, window, fridge, hub, timer)\n");
         return INVALID_COMMAND;
     }
-    if(next_children >= MAX_CHILDREN) {
+    if(children_count >= MAX_CHILDREN) {
         fprintf(stderr, "Errore: limite massimo di dispositivi raggiunto\n");
         return INVALID_COMMAND;
     }
@@ -83,87 +115,17 @@ int add_command(const char *device, const char *argchk) {
     TipoComando device_cmd = ottieni_codice_comando(device);
     switch(device_cmd) {
         case CMD_ADD_BULB:
-            printf("comando add bulb eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo bulb
-            fflush(stdout);
-            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo timer
-            new_device_pid = fork();
-            if(new_device_pid == 0) {
-                execv("./bulb", (char *[]){"code/bulb", tostring(next_children), NULL}); //TODO: passare gli argomenti necessari al processo bulb
-                perror("execv failed");
-                exit(EXIT_FAILURE);
-            } else if(new_device_pid < 0) {
-                perror("fork failed");
-                return LINK_FAILED;
-            }
-            children_pids[children_count++] = new_device_pid;
-            return ERR_OK;
+            return add_routine("bulb");
         case CMD_ADD_WINDOW:
-            printf("comando add window eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo window
-            fflush(stdout);
-            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo timer
-            new_device_pid = fork();
-            if(new_device_pid == 0) {
-                children_pids[children_count++] = getpid();
-                execv("./window", (char *[]){"code/window", tostring(next_children), NULL}); //TODO: passare gli argomenti necessari al processo window
-                perror("execv failed");
-                exit(EXIT_FAILURE);
-            } else if(new_device_pid < 0) {
-                perror("fork failed");
-                return LINK_FAILED;
-            }
-            children_pids[children_count++] = new_device_pid;
-            return ERR_OK;
+            return add_routine("window");
         case CMD_ADD_FRIDGE:
-            printf("comando add fridge eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo fridge
-            fflush(stdout);
-            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo timer
-            new_device_pid = fork();
-            if(new_device_pid == 0) {
-                children_pids[children_count++] = getpid();
-                execv("./fridge", (char *[]){"code/fridge", tostring(next_children), NULL}); //TODO: passare gli argomenti necessari al processo fridge
-                perror("execv failed");
-                exit(EXIT_FAILURE);
-            } else if(new_device_pid < 0) {
-                perror("fork failed");
-                return LINK_FAILED;
-            }
-            children_pids[children_count++] = new_device_pid;
-            return ERR_OK;
+            return add_routine("fridge");
         case CMD_ADD_HUB:
-            printf("comando add hub eseguito\n");
-            fflush(stdout);
-            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo hub
-            new_device_pid = fork();
-            if(new_device_pid == 0) {
-                execv("./hub", (char *[]){"code/hub", tostring(next_children), NULL}); //TODO: creare l'hub
-                perror("execv failed");
-                exit(EXIT_FAILURE);
-            } else if(new_device_pid < 0) {
-                perror("fork failed");
-                return LINK_FAILED;
-            }
-            children_pids[children_count++] = new_device_pid;
-            return ERR_OK;
+            return add_routine("hub");
         case CMD_ADD_TIMER:
-            printf("comando add timer eseguito\n"); //TODO: implementare la logica di aggiunta del dispositivo timer
-            fflush(stdout);
-            next_children++; // Incrementa il contatore dei figli prima di passarlo al processo timer
-            new_device_pid = fork();
-            if(new_device_pid == 0) {
-                // Child process
-                execv("./timer", (char *[]){"code/timer", tostring(next_children), NULL}); //TODO: passare gli argomenti necessari al processo timer
-                perror("execv failed");
-                exit(EXIT_FAILURE);
-            } else if(new_device_pid < 0) {
-                perror("fork failed");
-                return LINK_FAILED;
-            }
-            children_pids[children_count++] = new_device_pid;
-            return ERR_OK;
-        default:
-            fprintf(stderr, "sottocomando sconosciuto per 'add': %s\n", device);
-            return UNKNOWN_CMD_ERR;
+            return add_routine("timer");
     }
+    return INVALID_COMMAND;
 }
 
 int del_command(const char *id, const char *argchk) {
@@ -181,7 +143,18 @@ int del_command(const char *id, const char *argchk) {
         return INVALID_COMMAND;
     }
     printf("comando del eseguito con argomento: %s\n", id); //TODO: implementare la logica di eliminazione del dispositivo con l'id specificato
-
+    /*
+        for(int i = 0; i < children_count; i++) {
+            //si deve aprire la comunicazione con il processo figlio con l'id specificato e inviare un segnale di terminazione se lo sitrova
+            if(children_pids[i] == strtol(id, &endstrtol, 10)) {
+                kill(children_pids[i], SIGTERM);
+                children_pids[i] = 0; // Rimuove il PID dalla lista dei figli
+                return ERR_OK;
+            }
+        }
+        fprintf(stderr, "Errore: nessun dispositivo con l'id specificato\n");
+        return INVALID_COMMAND;
+    */
     return ERR_OK;
 }
 
@@ -308,8 +281,8 @@ int main(void){
             case CMD_ESCI:
                 printf("Uscita dal controller.\n");
                 for (int i = 0; i < children_count; i++) {
-                    if (children_pids[i] > 0) {
-                        kill(children_pids[i], SIGTERM);
+                    if (children[i].pid > 0) {
+                        kill(children[i].pid, SIGTERM);
                     }
                 }
                 return EXIT_SUCCESS;
