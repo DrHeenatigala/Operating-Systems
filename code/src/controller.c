@@ -6,7 +6,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <signal.h>
+#include <stdbool.h>
 #include "../include/errors.h"
 
 #define MAX_CHILDREN 100
@@ -29,11 +31,12 @@ typedef enum {
 
 typedef struct {
     pid_t pid;
-    char *fifo_path;
-} Dispositivo;
+    int id;
+    bool is_active;
+} Device;
 
 //variabili globali per tener traccia dei processi figli e dei loro fifo
-Dispositivo children[MAX_CHILDREN];
+Device children[MAX_CHILDREN];
 int children_count = 0;
 int next_children = 0;
 
@@ -56,8 +59,8 @@ TipoComando ottieni_codice_comando(const char *str) {
 
 void handle_signal(int sig) {
     if(sig == SIGINT || sig == SIGTERM) {
-        for (int i = 0; i < children_count; i++) {
-            if (children[i].pid > 0) {
+        for (int i = 0; i < MAX_CHILDREN; i++) {
+            if (children[i].pid > 0 && children[i].is_active) {
                 kill(children[i].pid, SIGTERM);
             }
         }
@@ -69,35 +72,77 @@ int list_command(const char *arg) {
         fprintf(stderr, "Errore: comando 'list' non accetta argomenti\n");
         return INVALID_COMMAND;
     }
+    printf("Controller - ID: 0, PID: %d\n", getpid());
+    for(int i = 0; i < MAX_CHILDREN; i++) {
+        if(children[i].is_active) {
+            printf("Dispositivo attivo - ID: %d, PID: %d\n", children[i].id, children[i].pid);
+        }
+    }
+
     printf("comando list eseguito\n"); //TODO: implementare la logica di visualizzazione della lista dei dispositivi
     return ERR_OK;
 }
-int add_routine(char *device) {
+
+int search_free_slot() {
+    for(int i = 0; i < MAX_CHILDREN; i++) {
+        if(children[i].is_active == false) {
+            return i;
+        }
+    }
+    return -1; // Nessuno slot libero trovato
+}
+
+int search_child_by_pid(pid_t pid) {
+    for(int i = 0; i < MAX_CHILDREN; i++) {
+        if(children[i].is_active == true && children[i].pid == pid) {
+            return i;
+        }
+    }
+    return -1; // Nessun figlio trovato con il pid specificato
+}
+
+int search_child_by_id(int id) {
+    for(int i = 0; i < MAX_CHILDREN; i++) {
+        if(children[i].is_active == true && children[i].id == id) {
+            return i;
+        }
+    }
+    return -1; // Nessun figlio trovato con l'id specificato
+}
+
+int add_routine(const char *device) {
     char testo[64];
     char path[64];
+    int slot = search_free_slot();
     pid_t new_device_pid;
-    printf("comando add %s eseguito\n", device);
-    fflush(stdout);
+
+    if(slot == -1) {
+        fprintf(stderr, "Errore: nessuno slot libero disponibile per aggiungere un nuovo dispositivo\n");
+        return INVALID_COMMAND;
+    }
+    int index = ++next_children;
     snprintf(path, sizeof(path), "./%s", device);
-    new_device_pid = fork();
+    snprintf(testo, sizeof(testo), "%d", index);
     
+    fflush(stdout);
+    new_device_pid = fork();
     if(new_device_pid == 0) {
-        snprintf(testo, sizeof(testo), "%d", next_children + 1);
-        execv(path, (char *[]){device, testo, NULL});
+        execv(path, (char *[]){(char *) device, testo, NULL});
         perror("execv failed");
         exit(EXIT_FAILURE);
     } else if(new_device_pid < 0) {
         perror("fork failed");
-        return LINK_FAILED;
+        return FORK_FAILED;
     }
 
-    next_children++;
-    snprintf(testo, sizeof(testo), "/tmp/domotics_%d.fifo", next_children);
-    children[next_children - 1].fifo_path = strdup(testo);
-    children[next_children - 1].pid = new_device_pid;
+    children[slot].pid = new_device_pid;
+    children[slot].is_active = true;
+    children[slot].id = index; // Assegna l'ID al dispositivo
     children_count++;
+    printf("%s aggiunto con id %d\n", device, children[slot].id);
     return ERR_OK;
 }
+
 int add_command(const char *device, const char *argchk) {
     if(device == NULL) {
         fprintf(stderr, "Errore: comando 'add' richiede un sottocomando (bulb, window, fridge, hub, timer)\n");
@@ -111,7 +156,6 @@ int add_command(const char *device, const char *argchk) {
         fprintf(stderr, "Errore: limite massimo di dispositivi raggiunto\n");
         return INVALID_COMMAND;
     }
-    pid_t new_device_pid;
     TipoComando device_cmd = ottieni_codice_comando(device);
     switch(device_cmd) {
         case CMD_ADD_BULB:
@@ -124,8 +168,10 @@ int add_command(const char *device, const char *argchk) {
             return add_routine("hub");
         case CMD_ADD_TIMER:
             return add_routine("timer");
+        default:
+            fprintf(stderr, "sottocomando sconosciuto per 'add': %s\n", device);
+            return UNKNOWN_CMD_ERR;
     }
-    return INVALID_COMMAND;
 }
 
 int del_command(const char *id, const char *argchk) {
@@ -138,23 +184,32 @@ int del_command(const char *id, const char *argchk) {
         fprintf(stderr, "Errore: comando 'del' accetta solo un argomento\n");
         return INVALID_COMMAND;
     }
-    if(strtol(id, &endstrtol, 10) < 0 || *endstrtol != '\0') {
+    int index = strtol(id, &endstrtol, 10);
+    if(index < 0 || *endstrtol != '\0') {
         fprintf(stderr, "Errore: l'id specificato non è valido\n");
         return INVALID_COMMAND;
     }
-    printf("comando del eseguito con argomento: %s\n", id); //TODO: implementare la logica di eliminazione del dispositivo con l'id specificato
-    /*
-        for(int i = 0; i < children_count; i++) {
-            //si deve aprire la comunicazione con il processo figlio con l'id specificato e inviare un segnale di terminazione se lo sitrova
-            if(children_pids[i] == strtol(id, &endstrtol, 10)) {
-                kill(children_pids[i], SIGTERM);
-                children_pids[i] = 0; // Rimuove il PID dalla lista dei figli
-                return ERR_OK;
-            }
-        }
-        fprintf(stderr, "Errore: nessun dispositivo con l'id specificato\n");
+    if(index == 0) {
+        fprintf(stderr, "Errore: il Controller non può essere eliminato\n");
         return INVALID_COMMAND;
-    */
+    }
+    if(search_child_by_id(index) == -1) {
+        fprintf(stderr, "Errore: nessun dispositivo con l'id specificato\n");
+        return DEVICE_NOT_FOUND;
+    } else {
+        int index = search_child_by_id(strtol(id, &endstrtol, 10));
+        if(index != -1) {
+            kill(children[index].pid, SIGTERM);
+            waitpid(children[index].pid, NULL, 0);
+            children[index].is_active = false;
+            children[index].pid = 0;
+            children[index].id = -1;
+            children_count--;
+            printf("Dispositivo con id %s eliminato correttamente\n", id);
+            return ERR_OK;
+        }
+    }
+
     return ERR_OK;
 }
 
@@ -280,7 +335,7 @@ int main(void){
                 break;
             case CMD_ESCI:
                 printf("Uscita dal controller.\n");
-                for (int i = 0; i < children_count; i++) {
+                for (int i = 0; i < MAX_CHILDREN; i++) {
                     if (children[i].pid > 0) {
                         kill(children[i].pid, SIGTERM);
                     }

@@ -8,5 +8,6 @@
 #define LINK_FAILED 3
 #define DEVICE_TYPE_MISMATCH 4
 #define UNKNOWN_CMD_ERR 5
+#define FORK_FAILED 6
 
 #endif
