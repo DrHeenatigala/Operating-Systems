@@ -326,8 +326,10 @@ int cmd_info(const char *id, const char *argchk) {
 int main(void){
     // il Controller apre una piccola shell con sei comandi: list, add, del, link, switch, info
     char input[128];
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wunused-but-set-variable"
     int error_code = ERR_OK;    //warning: inutilizzata ma verrà utilizzata in seguito
-
+    #pragma GCC diagnostic pop
     struct sigaction exit_action;
     struct sigaction kill_action;
     exit_action.sa_handler = handle_signal;
