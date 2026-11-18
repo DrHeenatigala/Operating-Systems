@@ -12,6 +12,8 @@
 #include "../include/errors.h"
 
 #define MAX_CHILDREN 100
+static volatile sig_atomic_t exit_call = 0;
+static volatile sig_atomic_t child_killed = 0;
 
 typedef enum {
     CMD_UNKNOWN = -1,
@@ -49,20 +51,31 @@ TipoComando ottieni_codice_comando(const char *str) {
     if (strcmp(str, "switch") == 0) return CMD_SWITCH;
     if (strcmp(str, "info") == 0)   return CMD_INFO;
     if (strcmp(str, "esci") == 0)   return CMD_ESCI;
-    if (strcmp(str, "bulb") == 0)   return CMD_ADD_BULB; // comando speciale per testare il bulb
-    if (strcmp(str, "window") == 0) return CMD_ADD_WINDOW; // comando speciale per testare la finestra
-    if (strcmp(str, "fridge") == 0) return CMD_ADD_FRIDGE; // comando speciale per testare il frigorifero
-    if (strcmp(str, "hub") == 0)    return CMD_ADD_HUB; // comando speciale per testare l'hub
-    if (strcmp(str, "timer") == 0)  return CMD_ADD_TIMER; // comando speciale per testare il timer
+    if (strcmp(str, "bulb") == 0)   return CMD_ADD_BULB; // comando speciale per aggiunta del bulb
+    if (strcmp(str, "window") == 0) return CMD_ADD_WINDOW; // comando speciale per aggiunta della finestra
+    if (strcmp(str, "fridge") == 0) return CMD_ADD_FRIDGE; // comando speciale per aggiunta del frigorifero
+    if (strcmp(str, "hub") == 0)    return CMD_ADD_HUB; // comando speciale aggiunta dell'hub
+    if (strcmp(str, "timer") == 0)  return CMD_ADD_TIMER; // comando speciale per aggiunta del timer
     return CMD_UNKNOWN;
 }
 
 void handle_signal(int sig) {
     if(sig == SIGINT || sig == SIGTERM) {
-        for (int i = 0; i < MAX_CHILDREN; i++) {
-            if (children[i].pid > 0 && children[i].is_active) {
-                kill(children[i].pid, SIGTERM);
-            }
+        exit_call = 1;
+    }
+}
+
+void handle_termination(int sig){
+    if(sig == SIGCHLD){
+        child_killed = 1;
+    }
+}
+
+void shutdown_all(){
+    for (int i = 0; i < MAX_CHILDREN; i++){
+        if(children[i].is_active){
+            kill(children[i].pid, SIGTERM);
+            waitpid(children[i].pid, NULL, 0);
         }
     }
 }
@@ -108,6 +121,38 @@ int search_child_by_id(int id) {
         }
     }
     return -1; // Nessun figlio trovato con l'id specificato
+}
+
+int free_slot(int index){
+    if(index >= MAX_CHILDREN || index < 0){
+        return -1;
+    }
+    children[index].is_active = false;
+    children[index].pid = 0;
+    children[index].id = -1;
+    children_count--;
+    return 0;
+}
+
+int collect_zombies(){
+    int status;
+    pid_t killed_child_pid;
+    int index = 0;
+    child_killed = 0;
+    while(1){
+        killed_child_pid = waitpid(-1, &status, WNOHANG);
+        if(killed_child_pid > 0){
+            index = search_child_by_pid(killed_child_pid);
+            if(index == -1){
+                continue;
+            }
+            fprintf(stderr, "Device with ID = %d has been terminated\n", children[index].id);
+            free_slot(index);
+        } else {
+            break;
+        }
+    }
+    return 0;
 }
 
 int add_routine(const char *device) {
@@ -201,10 +246,7 @@ int del_command(const char *id, const char *argchk) {
         if(index != -1) {
             kill(children[index].pid, SIGTERM);
             waitpid(children[index].pid, NULL, 0);
-            children[index].is_active = false;
-            children[index].pid = 0;
-            children[index].id = -1;
-            children_count--;
+            free_slot(index);
             printf("Dispositivo con id %s eliminato correttamente\n", id);
             return ERR_OK;
         }
@@ -284,18 +326,36 @@ int cmd_info(const char *id, const char *argchk) {
 int main(void){
     // il Controller apre una piccola shell con sei comandi: list, add, del, link, switch, info
     char input[128];
-    int error_code = ERR_OK;
-    struct sigaction sa;
-    sa.sa_handler = handle_signal;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
+    int error_code = ERR_OK;    //warning: inutilizzata ma verrà utilizzata in seguito
 
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGTERM, &sa, NULL);
+    struct sigaction exit_action;
+    struct sigaction kill_action;
+    exit_action.sa_handler = handle_signal;
+    kill_action.sa_handler = handle_termination;
+    sigemptyset(&exit_action.sa_mask);
+    sigemptyset(&kill_action.sa_mask);
+    exit_action.sa_flags = 0;
+    kill_action.sa_flags = 0;
+    sigaction(SIGINT, &exit_action, NULL);
+    sigaction(SIGTERM, &exit_action, NULL);
+    sigaction(SIGCHLD, &kill_action, NULL);
+    signal(SIGPIPE, SIG_IGN);
+
 
     printf("Controller avviato. Inserisci un comando (list, add, del, link, switch, info, esci): \n");
+
     while(1){
+        if(child_killed) {
+            collect_zombies();
+        }
+        if(exit_call){
+            break;
+        }
         if(fgets(input, sizeof(input), stdin) == NULL) {
+            if(child_killed || exit_call){
+                clearerr(stdin);
+                continue;
+            }
             break;
         }
         input[strcspn(input, "\n")] = '\0';
@@ -335,16 +395,14 @@ int main(void){
                 break;
             case CMD_ESCI:
                 printf("Uscita dal controller.\n");
-                for (int i = 0; i < MAX_CHILDREN; i++) {
-                    if (children[i].pid > 0) {
-                        kill(children[i].pid, SIGTERM);
-                    }
-                }
-                return EXIT_SUCCESS;
+                exit_call = 1;
+                break;
             default:
                 fprintf(stderr, "comando sconosciuto: %s\n", keyword);
                 printf("Reinserisci un comando valido (list, add, del, link, switch, info, esci): \n");
                 error_code = UNKNOWN_CMD_ERR;
         }
     }
+    shutdown_all();
+    return ERR_OK;
 }
